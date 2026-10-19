@@ -5,15 +5,24 @@
 #include <sys/msg.h>
 #include <unistd.h>
 
-int signal_msg = 0;
+static volatile sig_atomic_t signal_msg = 0;
 
 void signalHandler(int sig) {
     if (sig == SIGUSR1) {
-        signal_msg = 1; // Signal received
+        signal_msg = 1; // Signal received from scheduler
     }
+}
 
-    // reset the signal handler
-    signal(SIGUSR1, signalHandler);
+static void waitForSchedule(void) {
+    sigset_t mask, oldmask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &mask, &oldmask);
+    while (signal_msg == 0) {
+        sigsuspend(&oldmask);
+    }
+    signal_msg = 0;
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 struct msgbuf {
@@ -32,6 +41,11 @@ struct pageFrame {
 };
 
 int main(int argc, char *argv[]) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s <MQ1_id> <MQ3_id> <reference_string>\n", argv[0]);
+        exit(1);
+    }
+
     int MQ1_id = atoi(argv[1]);
     int MQ3_id = atoi(argv[2]);
 
@@ -42,15 +56,26 @@ int main(int argc, char *argv[]) {
     msg.m_type = 1;
     msg.message.pid = process_id;
 
-    signal(SIGUSR1, signalHandler);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signalHandler;
+    sigaction(SIGUSR1, &sa, NULL);
 
-    // Send the process id to the scheduler
+    // Block SIGUSR1 before enqueuing to ready queue to avoid missing immediate signals
+    sigset_t block_mask, orig_mask;
+    sigemptyset(&block_mask);
+    sigaddset(&block_mask, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &block_mask, &orig_mask);
+
+    // Send the process id to the scheduler (ready queue)
     msgsnd(MQ1_id, &msg, sizeof(msg.message), 0);
 
-    if (signal_msg == 0) {
-        pause();
+    // Wait until scheduler selects this process for the first time
+    while (signal_msg == 0) {
+        sigsuspend(&orig_mask);
     }
     signal_msg = 0;
+    sigprocmask(SIG_UNBLOCK, &block_mask, NULL);
 
     struct pageFrame pgf_msg;
 
@@ -68,17 +93,16 @@ int main(int argc, char *argv[]) {
         msgrcv(MQ3_id, &pgf_msg, sizeof(pgf_msg.message), process_id, 0);
 
         if (pgf_msg.message.data >= 0) {
-            // MMU sent a valid frame number
+            // MMU sent a valid frame number (Page Hit or successfully serviced)
+            // Parse next page number in the reference string
             token = strtok(NULL, ",");
         } else if (pgf_msg.message.data == -1) {
-            // MMU sent a page fault
-            if (signal_msg == 0) {
-                pause();
-            }
-            signal_msg = 0;
-            token = strtok(NULL, ",");
+            // MMU sent a page fault (-1)
+            // Save current element (do not advance token) and wait until rescheduled
+            waitForSchedule();
+            // Next iteration will retry the same page number, which is now loaded into memory
         } else if (pgf_msg.message.data == -2) {
-            // MMU sent a termination signal
+            // MMU sent illegal page access signal (-2)
             exit(0);
         } else {
             perror("Invalid data received from MMU");
@@ -86,7 +110,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Send the termination signal to MMU
+    // Send the completion marker (-9) to MMU
     pgf_msg.m_type = 1;
     pgf_msg.message.pid = process_id;
     pgf_msg.message.data = -9;

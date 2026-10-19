@@ -20,6 +20,10 @@ struct schedMsg {
 
 
 int main(int argc, char *argv[]) {
+    if (argc < 4) {
+        fprintf(stderr, "Usage: %s <MQ1_id> <MQ2_id> <k>\n", argv[0]);
+        exit(1);
+    }
     int MQ1_id = atoi(argv[1]);
     int MQ2_id = atoi(argv[2]);
     int k = atoi(argv[3]);
@@ -30,7 +34,7 @@ int main(int argc, char *argv[]) {
     int cnt = 0;
     while (cnt < k) {
 
-        // Select first process from ready queue
+        // Select first process from ready queue (FCFS)
         msgrcv(MQ1_id, &msg, sizeof(msg.message), 1, 0);
 
         // Signal the process to start
@@ -40,17 +44,19 @@ int main(int argc, char *argv[]) {
         msgrcv(MQ2_id, &schMsg, sizeof(schMsg.message), 1, 0);
 
         if (schMsg.message == 1) {
-            // Enqueue the current process and continue
+            // Type I message: PAGE FAULT HANDLED
+            // Enqueue the current process back into the ready queue
             msg.m_type = 1;
-            msg.message.pid = msg.message.pid;
             msgsnd(MQ1_id, &msg, sizeof(msg.message), 0);
         } else {
-            // Schedule the next process
+            // Type II message: PROCESS TERMINATED
+            // Process completed or encountered invalid page; schedule next
             ++cnt;
         }
     }
-    // Signal the Master process
+    // Signal the Master process that all processes have finished
     kill(getppid(), SIGUSR1);
 
     pause();
+    return 0;
 }

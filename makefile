@@ -1,17 +1,24 @@
-MASTER:
-	gcc -Wall -o master Master.c
+CC = gcc
+CFLAGS = -Wall -Wextra
 
-MMU:
-	gcc -Wall -o mmu MMU.c
+all: master mmu process sched
 
-PROCESS:
-	gcc -Wall -o process process.c
+master: Master.c
+	$(CC) $(CFLAGS) -o master Master.c
 
-SCHED:
-	gcc -Wall -o sched sched.c
+mmu: MMU.c
+	$(CC) $(CFLAGS) -o mmu MMU.c
 
-all: MASTER MMU PROCESS SCHED
-	ipcrm -a		# remove all user shared memory just in case
+process: process.c
+	$(CC) $(CFLAGS) -o process process.c
+
+sched: sched.c
+	$(CC) $(CFLAGS) -o sched sched.c
 
 clean:
-	rm -f master mmu process sched
+	rm -f master mmu process sched result.txt
+
+clean-ipc:
+	ipcrm -a 2>/dev/null || true
+
+.PHONY: all clean clean-ipc
