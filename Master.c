@@ -32,27 +32,34 @@ static int *g_free_frame_list = NULL;
 static pageMap *g_page_map = NULL;
 
 void signalHandler(int sig) {
+    //SIGUSR1: The "It's your turn to work!" chime.
     if (sig == SIGUSR1) {
         waitSched = 0;
     }
 }
 
 void cleanup_ipc(void) {
+    //"I am done reading and writing to this memory for now. Disconnect my pointer."
     if (g_page_map && g_page_map != (void *)-1) shmdt(g_page_map);
     if (g_page_table && g_page_table != (void *)-1) shmdt(g_page_table);
     if (g_free_frame_list && g_free_frame_list != (void *)-1) shmdt(g_free_frame_list);
 
+    //"We are completely finished with this project. Destroy this shared memory block and free the RAM."
     if (g_SM1_id != -1) shmctl(g_SM1_id, IPC_RMID, NULL);
     if (g_SM2_id != -1) shmctl(g_SM2_id, IPC_RMID, NULL);
     if (g_SM3_id != -1) shmctl(g_SM3_id, IPC_RMID, NULL);
 
+    //"We are finished running the project. Delete this mailbox and throw away any leftover letters."
     if (g_MQ1_id != -1) msgctl(g_MQ1_id, IPC_RMID, NULL);
     if (g_MQ2_id != -1) msgctl(g_MQ2_id, IPC_RMID, NULL);
     if (g_MQ3_id != -1) msgctl(g_MQ3_id, IPC_RMID, NULL);
 }
 
 void sigint_handler(int sig) {
+    // SIGINT: The "Emergency! Shut everything down!" chime (like pressing Ctrl + C).
     (void)sig;
+    //Kill does nothing but send a signal to the process with the given PID.
+    // If the process is already terminated, it will have no effect.
     if (g_sched_pid > 0) kill(g_sched_pid, SIGINT);
     if (g_mmu_pid > 0) kill(g_mmu_pid, SIGINT);
     cleanup_ipc();
@@ -81,6 +88,8 @@ int main() {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signalHandler;
+    // "When SIGUSR1 rings, don't shut me down! Instead,
+    // run my custom function named signalHandler()."
     sigaction(SIGUSR1, &sa, NULL);
 
     struct sigaction sa_int;
@@ -89,8 +98,10 @@ int main() {
     sigaction(SIGINT, &sa_int, NULL);
 
     // Initialise the page table for k processes
-    key_t SM1_key = ftok("/tmp", 100);
-    int SM1_id = shmget(SM1_key, k * m * sizeof(pageTable), IPC_CREAT | 0666);
+    key_t SM1_key = ftok("/tmp", 100); // Generate a unique key for shared memory segment 1
+    int SM1_id = shmget(SM1_key, k * m * sizeof(pageTable), IPC_CREAT | 0666); 
+    // Create shared memory segment for page table
+    // Basically reserve memory for k processes, each with m pages, and each page having a pageTable structure
     if (SM1_id < 0) {
         perror("shmget SM1 failed");
         cleanup_ipc();
@@ -120,6 +131,8 @@ int main() {
 
     // Initialise the ready queue
     key_t MQ1_key = ftok("/tmp", 103);
+    //"Please give me a mailbox associated with this key. 
+    //If it doesn't exist yet (IPC_CREAT), create a brand new one!"
     int MQ1_id = msgget(MQ1_key, IPC_CREAT | 0666);
     if (MQ1_id < 0) {
         perror("msgget MQ1 failed");
@@ -148,7 +161,9 @@ int main() {
     }
     g_MQ3_id = MQ3_id;
 
-    pageTable *page_table = (pageTable *)shmat(SM1_id, NULL, 0);
+    pageTable *page_table = (pageTable *)shmat(SM1_id, NULL, 0); 
+    //Returns a pointer to the shared memory segment for the page table
+    //Now you can use it like an array
     int *free_frame_list = (int *)shmat(SM2_id, NULL, 0);
     pageMap *page_map = (pageMap *)shmat(SM3_id, NULL, 0);
 
@@ -306,10 +321,14 @@ int main() {
 
     // Wait until scheduler notifies completion of all processes
     sigset_t block_mask, orig_mask;
+    //Empty the signal set of block_mask
     sigemptyset(&block_mask);
+    //Add SIGUSR1 to the signal set of block_mask
     sigaddset(&block_mask, SIGUSR1);
+    //Temporarily BLOCK any doorbell rings on this list so I can finish an important task without being interrupted
     sigprocmask(SIG_BLOCK, &block_mask, &orig_mask);
     while (waitSched == 1) {
+        //Sleep until a doorbell rings, then check if it's my turn to work. If not, go back to sleep.
         sigsuspend(&orig_mask);
     }
     sigprocmask(SIG_UNBLOCK, &block_mask, NULL);
